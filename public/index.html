@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#06283d">
+<title>Pirates IO — MVP</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#06364b;color:#fff;font-family:system-ui,-apple-system,Segoe UI,sans-serif;touch-action:none}
+#game{position:fixed;inset:0}canvas{display:block}
+#top{position:fixed;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;gap:8px;pointer-events:none}
+.panel{background:#06283ddd;border:1px solid #8ed8e755;border-radius:12px;padding:8px 11px;box-shadow:0 3px 14px #00151c55;font-size:13px}
+#status{max-width:62%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#help{position:fixed;top:62px;left:10px;background:#06283dcc;padding:7px 10px;border-radius:10px;font-size:12px;max-width:80%;pointer-events:none}
+#joystick{position:fixed;bottom:22px;left:22px;width:120px;height:120px;border-radius:50%;background:#d7f8ff24;border:2px solid #d7f8ff88;touch-action:none}
+#stick{position:absolute;left:35px;top:35px;width:46px;height:46px;border-radius:50%;background:#d7f8ffbb;border:2px solid white}
+#collect{position:fixed;bottom:36px;right:20px;width:92px;height:62px;border:0;border-radius:18px;background:#f6b73c;color:#182b36;font-weight:800;font-size:14px;box-shadow:0 4px 0 #a66e17}
+#collect:active{transform:translateY(3px);box-shadow:0 1px 0 #a66e17}
+#toast{position:fixed;left:50%;bottom:165px;transform:translateX(-50%);background:#06283eea;border-radius:12px;padding:9px 14px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap}
+#players{position:fixed;right:10px;top:108px;max-width:145px;background:#06283dcc;border-radius:10px;padding:8px;font-size:11px;pointer-events:none}
+#players b{display:block;margin-bottom:4px}
+@media(min-width:800px){#joystick{width:140px;height:140px}#stick{left:42px;top:42px}#collect{bottom:30px}}
+</style>
+</head>
+<body>
+<div id="game"></div>
+<div id="top"><div class="panel" id="status">Подключение к серверу…</div><div class="panel">🪙 <span id="coins">0</span></div></div>
+<div id="help">Собирай 🐚 ракушки и 🦀 крабов. Подойди близко и нажми «Собрать».</div>
+<div id="players"><b>Игроки рядом</b><span id="playerList">Подключение…</span></div>
+<div id="joystick"><div id="stick"></div></div>
+<button id="collect">СОБРАТЬ</button>
+<div id="toast"></div>
+<script src="/socket.io/socket.io.js"></script>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+const socket = io();
+const root = document.getElementById('game');
+const statusEl = document.getElementById('status');
+const coinsEl = document.getElementById('coins');
+const toastEl = document.getElementById('toast');
+const playerListEl = document.getElementById('playerList');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x6dc6df);
+scene.fog = new THREE.Fog(0x6dc6df, 45, 130);
+const camera = new THREE.PerspectiveCamera(65, innerWidth/innerHeight, 0.1, 300);
+const renderer = new THREE.WebGLRenderer({antialias:false, powerPreference:'low-power'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = false;
+root.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xd8f5ff, 0x49634a, 2));
+const sun = new THREE.DirectionalLight(0xffe3ad, 2.1);
+sun.position.set(-25, 45, 20); scene.add(sun);
+
+const water = new THREE.Mesh(new THREE.PlaneGeometry(300,300,1,1), new THREE.MeshLambertMaterial({color:0x178eae}));
+water.rotation.x = -Math.PI/2; water.position.y=-0.15; scene.add(water);
+
+const island = new THREE.Group(); scene.add(island);
+const sand = new THREE.Mesh(new THREE.CylinderGeometry(18,19,1.1,16), new THREE.MeshLambertMaterial({color:0xe7d39a}));
+sand.position.y=0.15; island.add(sand);
+const grass = new THREE.Mesh(new THREE.CylinderGeometry(14,16,0.8,16), new THREE.MeshLambertMaterial({color:0x4b9a54}));
+grass.position.y=0.65; island.add(grass);
+function tree(x,z,s=1){
+ const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.25,.35,2.8,5),new THREE.MeshLambertMaterial({color:0x80512e}));
+ trunk.position.set(x,2,z); island.add(trunk);
+ const crown=new THREE.Mesh(new THREE.ConeGeometry(1.8*s,3.2*s,5),new THREE.MeshLambertMaterial({color:0x247447}));
+ crown.position.set(x,4.1,z); island.add(crown);
+}
+tree(-5,-4,1);tree(5,-2,.85);tree(2,6,1.1);tree(-8,4,.8);
+for(let i=0;i<7;i++){const rock=new THREE.Mesh(new THREE.DodecahedronGeometry(.5+Math.random()*.6,0),new THREE.MeshLambertMaterial({color:0x9caa9c}));rock.position.set(Math.cos(i*2.4)*11,.8,Math.sin(i*2.4)*11);island.add(rock)}
+const dock=new THREE.Mesh(new THREE.BoxGeometry(2,0.25,7),new THREE.MeshLambertMaterial({color:0x80512e}));
+dock.position.set(0,.25,18);island.add(dock);
+
+function makePirate(color=0x2d354d){
+ const g=new THREE.Group();
+ const body=new THREE.Mesh(new THREE.CylinderGeometry(.42,.5,1.1,7),new THREE.MeshLambertMaterial({color}));
+ body.position.y=1.15;g.add(body);
+ const head=new THREE.Mesh(new THREE.SphereGeometry(.34,8,6),new THREE.MeshLambertMaterial({color:0xd9a574}));
+ head.position.y=1.95;g.add(head);
+ const hat=new THREE.Mesh(new THREE.CylinderGeometry(.48,.48,.12,8),new THREE.MeshLambertMaterial({color:0x20242a}));
+ hat.position.y=2.25;g.add(hat);
+ const brim=new THREE.Mesh(new THREE.CylinderGeometry(.65,.65,.08,8),new THREE.MeshLambertMaterial({color:0x20242a}));
+ brim.position.y=2.19;g.add(brim);
+ const legmat=new THREE.MeshLambertMaterial({color:0x26384a});
+ for(const x of [-.22,.22]){const leg=new THREE.Mesh(new THREE.BoxGeometry(.2,.65,.22),legmat);leg.position.set(x,.45,0);g.add(leg)}
+ return g;
+}
+const me=makePirate(0x2878a0);scene.add(me);
+const remote=new Map(), resourceMeshes=new Map();
+let myId=null, coins=0, yaw=0, targetX=0,targetZ=0, lastEmit=0;
+const resourceGroup=new THREE.Group();scene.add(resourceGroup);
+const mats={shell:new THREE.MeshLambertMaterial({color:0xf6e8c6}),crab:new THREE.MeshLambertMaterial({color:0xe45a37})};
+function addResource(r){
+ const mesh=r.type==='shell'
+ ? new THREE.Mesh(new THREE.SphereGeometry(.35,7,5),mats.shell)
+ : new THREE.Mesh(new THREE.BoxGeometry(.65,.35,.5),mats.crab);
+ mesh.position.set(r.x,.35,r.z);mesh.userData={id:r.id,type:r.type};resourceGroup.add(mesh);resourceMeshes.set(r.id,mesh);
+}
+function showToast(t){toastEl.textContent=t;toastEl.style.opacity=1;clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>toastEl.style.opacity=0,1500)}
+function upsertPlayer(p){
+ if(p.id===myId)return;
+ let obj=remote.get(p.id);
+ if(!obj){obj=makePirate(0xa84a3b);scene.add(obj);remote.set(p.id,obj)}
+ obj.position.set(p.x,0,p.z);obj.rotation.y=p.yaw||0;obj.userData.name=p.name||'Пират';
+}
+function updatePlayerList(){
+ const names=[...remote.values()].map(o=>o.userData.name);
+ playerListEl.textContent=(myId?'Вы':'')+(names.length?(myId?' · ':'')+names.slice(0,5).join(', '):' · ждём других');
+}
+socket.on('connect',()=>{statusEl.textContent='На сервере · подключено';});
+socket.on('disconnect',()=>{statusEl.textContent='Связь потеряна · переподключение…';});
+socket.on('welcome',d=>{
+ myId=d.id;
+ me.position.set(0,0,0);
+ (d.players||[]).forEach(upsertPlayer);
+ (d.resources||[]).forEach(addResource);
+ updatePlayerList();
+ showToast('Добро пожаловать! Собирай ресурсы.');
+});
+socket.on('playerJoined',p=>{upsertPlayer(p);updatePlayerList();showToast(p.name+' прибыл на остров')});
+socket.on('playerMoved',p=>{const o=remote.get(p.id);if(o){o.position.x=p.x;o.position.z=p.z;o.rotation.y=p.yaw||0}});
+socket.on('worldState',list=>{list.forEach(upsertPlayer);updatePlayerList()});
+socket.on('playerLeft',id=>{const o=remote.get(id);if(o){scene.remove(o);remote.delete(id);updatePlayerList()}});
+socket.on('resourceRemoved',d=>{const m=resourceMeshes.get(d.id);if(m){resourceGroup.remove(m);resourceMeshes.delete(d.id)}});
+socket.on('wallet',d=>{coins=d.coins;coinsEl.textContent=coins;showToast('+'+d.gained+' монет')});
+
+const joy=document.getElementById('joystick'),stick=document.getElementById('stick');
+let joyPointer=null, joyX=0, joyY=0;
+function setJoy(e){
+ const r=joy.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+ let dx=e.clientX-cx,dy=e.clientY-cy,mag=Math.hypot(dx,dy),lim=38;
+ if(mag>lim){dx=dx/mag*lim;dy=dy/mag*lim}
+ joyX=dx/lim;joyY=dy/lim;
+ stick.style.transform=`translate(${dx}px,${dy}px)`;
+}
+joy.addEventListener('pointerdown',e=>{joyPointer=e.pointerId;joy.setPointerCapture(e.pointerId);setJoy(e)});
+joy.addEventListener('pointermove',e=>{if(e.pointerId===joyPointer)setJoy(e)});
+function releaseJoy(e){if(e.pointerId===joyPointer){joyPointer=null;joyX=joyY=0;stick.style.transform='translate(0,0)'}}
+joy.addEventListener('pointerup',releaseJoy);joy.addEventListener('pointercancel',releaseJoy);
+
+document.getElementById('collect').addEventListener('click',()=>{
+ let best=null,dist=4.5;
+ for(const [id,m] of resourceMeshes){const d=Math.hypot(me.position.x-m.position.x,me.position.z-m.position.z);if(d<dist){dist=d;best=id}}
+ if(best)socket.emit('collect',best);else showToast('Подойди ближе к 🐚 или 🦀');
+});
+
+function animate(){
+ requestAnimationFrame(animate);
+ const dt=Math.min(clock.getDelta(),.05);
+ const speed=8;
+ const forward=-joyY,side=joyX;
+ if(Math.abs(forward)+Math.abs(side)>.08){
+   const len=Math.hypot(side,forward)||1;
+   const dx=side/len*speed*dt,dz=-forward/len*speed*dt;
+   me.position.x=Math.max(-44,Math.min(44,me.position.x+dx));
+   me.position.z=Math.max(-44,Math.min(44,me.position.z+dz));
+   yaw=Math.atan2(dx,dz);me.rotation.y=yaw;
+ }
+ const desired=new THREE.Vector3(me.position.x,5.2,me.position.z+8.8);
+ camera.position.lerp(desired,.12);
+ camera.lookAt(me.position.x,1.1,me.position.z);
+ const t=performance.now()*.001;
+ resourceMeshes.forEach(m=>{m.position.y=.35+Math.sin(t*2+m.position.x)*.07;m.rotation.y+=dt*.5});
+ const now=Date.now();
+ if(socket.connected && now-lastEmit>80){socket.emit('move',{x:me.position.x,z:me.position.z,yaw});lastEmit=now}
+ renderer.render(scene,camera);
+}
+const clock=new THREE.Clock();
+camera.position.set(0,6,10);animate();
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+</script>
+</body>
+</html>
